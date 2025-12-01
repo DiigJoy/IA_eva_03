@@ -1,0 +1,11 @@
+# ParkingEnv RL
+
+Proyecto de Aprendizaje por Refuerzo para estacionar un auto en 2D usando Gymnasium y Stable-Baselines3.
+
+## Instalación
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # en Windows: .venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
