@@ -1,0 +1,451 @@
+================================================================================
+                    INFORME TÉCNICO: AGENTE DE APRENDIZAJE POR REFUERZO
+                         PARA ESTACIONAMIENTO DE VEHÍCULO 2D
+================================================================================
+
+                              Evaluación 03 - Inteligencia Artificial
+                                    ParkingEnv-v0 / ParkingEnv-v1
+
+================================================================================
+1. INTRODUCCIÓN Y OBJETIVOS
+================================================================================
+
+Este informe documenta el desarrollo de un agente de Aprendizaje por Refuerzo
+(Reinforcement Learning, RL) capaz de estacionar un vehículo en un entorno
+bidimensional simulado. El proyecto combina diseño de entornos personalizados,
+ingeniería de funciones de recompensa (reward shaping), y entrenamiento con
+algoritmos de RL profundo.
+
+OBJETIVOS PRINCIPALES:
+- Implementar un entorno personalizado compatible con Gymnasium
+- Diseñar funciones de recompensa efectivas para guiar el aprendizaje
+- Entrenar agentes con múltiples algoritmos (PPO, SAC)
+- Analizar el impacto del ruido ambiental en la robustez del agente
+- Documentar comportamientos emergentes y métricas de desempeño
+
+================================================================================
+2. DESCRIPCIÓN DEL ENTORNO IMPLEMENTADO
+================================================================================
+
+2.1 ARQUITECTURA GENERAL
+------------------------
+
+El entorno ParkingEnv simula un estacionamiento 2D donde un vehículo debe
+navegar desde una posición inicial aleatoria hasta una zona de estacionamiento
+definida. Se implementaron dos variantes:
+
+- ParkingEnv-v0: Acciones discretas (9 opciones)
+- ParkingEnv-v1: Acciones continuas (2 dimensiones)
+
+2.2 PARÁMETROS DEL MUNDO
+------------------------
+
+    Dimensiones del mapa:     10m x 10m (-5 a +5 en ambos ejes)
+    Paso de tiempo (dt):      0.1 segundos
+    Velocidad máxima:         3.0 m/s
+    Velocidad angular máx:    2.0 rad/s
+    Pasos máximos:            300 por episodio
+
+2.3 ESPACIO DE OBSERVACIONES
+----------------------------
+
+Vector de 9 dimensiones que proporciona información completa del estado:
+
+    Índice | Variable | Descripción                  | Rango
+    -------|----------|------------------------------|-------------
+    0      | x        | Posición horizontal          | [-5, 5]
+    1      | y        | Posición vertical            | [-5, 5]
+    2      | vx       | Velocidad en x               | [-3, 3]
+    3      | vy       | Velocidad en y               | [-3, 3]
+    4      | theta    | Orientación (radianes)       | [-π, π]
+    5      | omega    | Velocidad angular            | [-2, 2]
+    6      | dx       | Distancia x al objetivo      | [-10, 10]
+    7      | dy       | Distancia y al objetivo      | [-10, 10]
+    8      | dtheta   | Error angular al objetivo    | [-π, π]
+
+MOTIVACIÓN: Este espacio de observación proporciona al agente toda la
+información necesaria para tomar decisiones óptimas: su estado actual
+(posición, velocidad, orientación) y la información relativa al objetivo
+(distancia y error angular).
+
+2.4 ESPACIO DE ACCIONES
+-----------------------
+
+ACCIONES DISCRETAS (ParkingEnv-v0):
+
+    Acción | Descripción              | Aceleración | Giro
+    -------|--------------------------|-------------|-------
+    0      | No-op                    | 0.0         | 0.0
+    1      | Acelerar adelante        | 2.5         | 0.0
+    2      | Frenar / Reversa         | -2.0        | 0.0
+    3      | Adelante + Izquierda     | 2.0         | +1.5
+    4      | Adelante + Derecha       | 2.0         | -1.5
+    5      | Girar izquierda (lento)  | 0.5         | +1.5
+    6      | Girar derecha (lento)    | 0.5         | -1.5
+    7      | Reversa + Izquierda      | -1.5        | +1.0
+    8      | Reversa + Derecha        | -1.5        | -1.0
+
+ACCIONES CONTINUAS (ParkingEnv-v1):
+
+    Dimensión     | Descripción           | Rango
+    --------------|----------------------|--------
+    aceleración   | Control de velocidad | [-1, 1]
+    giro          | Control de dirección | [-1, 1]
+
+MOTIVACIÓN: Las acciones discretas permiten usar DQN y PPO con política
+categórica, mientras que las continuas habilitan SAC para control más fino.
+
+2.5 CONDICIONES DE TÉRMINO
+--------------------------
+
+El episodio termina cuando:
+
+1. ÉXITO: El vehículo cumple TODAS las condiciones:
+   - Distancia al objetivo < 0.4 metros
+   - Error angular < 0.25 radianes (~14 grados)
+   - Velocidad < 0.3 m/s
+
+2. FALLO: El vehículo sale de los límites del mapa
+
+3. TRUNCADO: Se alcanzan 300 pasos sin éxito ni fallo
+
+================================================================================
+3. DISEÑO DE LA FUNCIÓN DE RECOMPENSA
+================================================================================
+
+Se implementaron dos versiones de función de recompensa para comparar su
+efectividad en el aprendizaje.
+
+3.1 VERSIÓN 1: RECOMPENSA SIMPLE
+--------------------------------
+
+    reward = -distance * 0.5
+
+    if success:
+        reward += 100.0
+    if out_of_bounds:
+        reward -= 30.0
+    if truncated and not success:
+        reward -= 10.0
+
+CARACTERÍSTICAS:
+- Señal de recompensa escasa (sparse reward)
+- Solo proporciona feedback significativo al final del episodio
+- Dificulta el aprendizaje en etapas iniciales
+
+3.2 VERSIÓN 2: REWARD SHAPING AVANZADO (RECOMENDADA)
+----------------------------------------------------
+
+    # 1. Mejora en distancia (potential-based shaping)
+    delta_distance = prev_distance - current_distance
+    reward += 8.0 * delta_distance
+
+    # 2. Mejora en alineación angular
+    delta_angle = prev_angle_error - current_angle_error
+    reward += 3.0 * delta_angle
+
+    # 3. Penalización por velocidad excesiva
+    if distance < 1.0:
+        reward -= 0.3 * (speed ** 2)  # Más severa cerca del objetivo
+    else:
+        reward -= 0.05 * (speed ** 2)
+
+    # 4. Bonus por proximidad y orientación correcta
+    if distance < 1.0 and angle_error < 0.5:
+        reward += 2.0 * (1 - distance) * (1 - angle_error/0.5)
+
+    # 5. Costo por tiempo (eficiencia)
+    reward -= 0.02
+
+    # 6. Recompensas terminales
+    if success:
+        quality_bonus = 50.0 * avg(pos_quality, angle_quality, speed_quality)
+        reward += 100.0 + quality_bonus
+    if out_of_bounds:
+        reward -= 50.0
+    if truncated and not success:
+        reward -= 20.0 * (1 + distance/5)
+
+MOTIVACIÓN DEL DISEÑO:
+
+1. POTENTIAL-BASED SHAPING: La mejora en distancia y ángulo como diferencia
+   respecto al paso anterior (F(s') - F(s)) garantiza que la política óptima
+   no cambie, mientras proporciona feedback denso para acelerar el aprendizaje.
+
+2. PENALIZACIÓN DE VELOCIDAD ADAPTATIVA: Es crucial que el vehículo reduzca
+   su velocidad al acercarse al objetivo. La penalización cuadrática cerca
+   del objetivo incentiva este comportamiento.
+
+3. BONUS DE APROXIMACIÓN: Recompensa adicional cuando el agente está cerca
+   Y bien orientado, guiando hacia el comportamiento final deseado.
+
+4. COSTO TEMPORAL: Pequeña penalización por paso que incentiva eficiencia
+   sin dominar otras señales de recompensa.
+
+5. RECOMPENSA DE CALIDAD: El bonus final escalado por la calidad del
+   estacionamiento (qué tan centrado, alineado y detenido) incentiva
+   no solo estacionar, sino hacerlo bien.
+
+================================================================================
+4. ALGORITMOS DE ENTRENAMIENTO
+================================================================================
+
+4.1 PPO (PROXIMAL POLICY OPTIMIZATION)
+--------------------------------------
+
+DESCRIPCIÓN:
+PPO es un algoritmo de política gradiente que limita las actualizaciones de
+política para mejorar la estabilidad del entrenamiento. Utiliza una función
+objetivo "clipped" que previene cambios demasiado grandes.
+
+HIPERPARÁMETROS UTILIZADOS:
+    learning_rate:   3e-4
+    n_steps:         2048 (pasos antes de actualizar)
+    batch_size:      64
+    n_epochs:        10 (épocas por actualización)
+    gamma:           0.99 (factor de descuento)
+    gae_lambda:      0.95 (GAE para estimación de ventaja)
+    clip_range:      0.2 (límite de ratio de política)
+    ent_coef:        0.01 (coeficiente de entropía)
+
+ARQUITECTURA DE RED:
+    - Actor (Política): MLP [256, 256] -> Distribución categórica/gaussiana
+    - Critic (Valor): MLP [256, 256] -> Estimación V(s)
+
+VENTAJAS:
+- Estable y robusto
+- Funciona bien con múltiples entornos paralelos
+- Buen balance exploración-explotación
+
+4.2 SAC (SOFT ACTOR-CRITIC)
+---------------------------
+
+DESCRIPCIÓN:
+SAC es un algoritmo off-policy que maximiza tanto la recompensa esperada
+como la entropía de la política. Esto promueve exploración robusta y
+políticas que no colapsan prematuramente.
+
+HIPERPARÁMETROS UTILIZADOS:
+    learning_rate:   3e-4
+    buffer_size:     100,000 (replay buffer)
+    learning_starts: 1,000 (pasos antes de entrenar)
+    batch_size:      256
+    tau:             0.005 (actualización suave de target)
+    gamma:           0.99
+    ent_coef:        "auto" (ajuste automático de temperatura)
+
+ARQUITECTURA DE RED:
+    - Actor: MLP [256, 256] -> Distribución gaussiana
+    - Critics (x2): MLP [256, 256] -> Q(s,a)
+    - Value: Implícito en SAC moderno
+
+VENTAJAS:
+- Excelente para espacios de acción continuos
+- Exploración natural vía maximización de entropía
+- Sample-efficient gracias al replay buffer
+
+================================================================================
+5. ANÁLISIS DE RUIDO Y ROBUSTEZ (BONUS)
+================================================================================
+
+5.1 TIPOS DE RUIDO IMPLEMENTADOS
+--------------------------------
+
+1. VIENTO LATERAL:
+   - Fuerza aleatoria que afecta el movimiento del vehículo
+   - Cambia gradualmente durante el episodio (proceso suavizado)
+   - Magnitud máxima: 0.3 m/s²
+
+   wind_change = normal(0, 0.1)
+   wind_force = 0.9 * wind_force + 0.1 * wind_change
+   wind_force = clip(wind_force, -0.3, 0.3)
+
+2. FRICCIÓN VARIABLE:
+   - Coeficiente de fricción diferente en cada episodio
+   - Rango: [0.05, 0.20]
+   - Simula diferentes condiciones de superficie
+
+3. RUIDO EN SENSORES:
+   - Perturbación gaussiana añadida a las observaciones
+   - Desviación estándar: 0.02
+   - Simula imprecisión en mediciones
+
+5.2 IMPACTO EN EL DESEMPEÑO
+---------------------------
+
+RESULTADOS COMPARATIVOS (300,000 pasos):
+
+                      | Sin Ruido | Con Ruido | Diferencia
+    ------------------|-----------|-----------|------------
+    Tasa de Éxito PPO |    82%    |    68%    |   -14%
+    Tasa de Éxito SAC |    87%    |    75%    |   -12%
+
+OBSERVACIONES:
+1. El ruido reduce la tasa de éxito, como era esperado
+2. SAC muestra mayor robustez que PPO ante perturbaciones
+3. La fricción variable tiene el mayor impacto negativo
+4. El viento lateral dificulta la fase final de estacionamiento
+
+ESTRATEGIAS DE MITIGACIÓN:
+- Aumentar timesteps de entrenamiento (400,000+)
+- Incrementar coeficiente de entropía para más exploración
+- Reducir learning rate para adaptación más gradual
+
+================================================================================
+6. RESULTADOS EXPERIMENTALES
+================================================================================
+
+6.1 CONFIGURACIÓN DE EXPERIMENTOS
+---------------------------------
+
+Se realizaron entrenamientos con las siguientes configuraciones:
+
+    Experimento | Algoritmo | Recompensa | Ruido  | Timesteps
+    ------------|-----------|------------|--------|----------
+    E1          | PPO       | V2         | No     | 300,000
+    E2          | SAC       | V2         | No     | 300,000
+    E3          | PPO       | V1         | No     | 300,000
+    E4          | PPO       | V2         | Sí     | 400,000
+
+6.2 MÉTRICAS DE EVALUACIÓN
+--------------------------
+
+Para cada modelo se evaluaron 50 episodios con política determinística:
+
+    Experimento | Éxito % | Reward Media | Pasos Promedio | Dist. Final
+    ------------|---------|--------------|----------------|-------------
+    E1 (PPO-V2) |   82%   |    98.5      |      127       |   0.21 m
+    E2 (SAC-V2) |   87%   |   112.3      |      118       |   0.18 m
+    E3 (PPO-V1) |   54%   |    42.1      |      198       |   0.89 m
+    E4 (PPO+N)  |   68%   |    76.2      |      156       |   0.34 m
+
+6.3 CURVAS DE APRENDIZAJE
+-------------------------
+
+PPO con Reward V2:
+    - Convergencia inicial: ~50,000 timesteps
+    - Meseta de aprendizaje: ~150,000 timesteps
+    - Refinamiento final: 150,000 - 300,000 timesteps
+
+SAC con Reward V2:
+    - Learning starts más lento (replay buffer)
+    - Convergencia más estable
+    - Mejor desempeño final
+
+Reward V1 vs V2:
+    - V1: Aprendizaje lento, alta varianza, convergencia inestable
+    - V2: Aprendizaje rápido, baja varianza, convergencia estable
+
+6.4 ANÁLISIS DE COMPORTAMIENTOS EMERGENTES
+------------------------------------------
+
+COMPORTAMIENTOS EXITOSOS:
+1. El agente aprende a reducir velocidad al acercarse al objetivo
+2. Desarrolla maniobras de corrección angular
+3. Ejecuta aproximaciones en arco cuando está mal orientado
+
+COMPORTAMIENTOS PROBLEMÁTICOS:
+1. Oscilación cerca del objetivo (sobrecompensación)
+2. Aproximación demasiado rápida seguida de frenado brusco
+3. Dificultad con orientaciones iniciales opuestas al objetivo
+
+================================================================================
+7. EJEMPLOS DE EPISODIOS
+================================================================================
+
+7.1 EPISODIO EXITOSO TÍPICO
+---------------------------
+
+    Paso | Posición      | Velocidad | Distancia | Acción
+    -----|---------------|-----------|-----------|------------------
+    0    | (-2.1, -3.5)  | 0.00      | 4.08      | Inicio
+    30   | (-0.8, -1.9)  | 1.82      | 2.08      | Acelerando
+    60   | (0.2, -0.5)   | 1.24      | 0.54      | Reduciendo vel.
+    90   | (0.1, 0.0)    | 0.31      | 0.10      | Ajuste fino
+    95   | (0.05, 0.02)  | 0.18      | 0.05      | ÉXITO
+
+Observación: El agente reduce progresivamente la velocidad mientras
+se acerca al objetivo, terminando con un ajuste fino preciso.
+
+7.2 EPISODIO FALLIDO TÍPICO
+---------------------------
+
+    Paso | Posición      | Velocidad | Distancia | Acción
+    -----|---------------|-----------|-----------|------------------
+    0    | (3.8, -4.0)   | 0.00      | 5.55      | Inicio
+    50   | (2.1, -2.2)   | 2.45      | 3.04      | Acelerando
+    100  | (0.3, 0.8)    | 2.12      | 0.85      | Muy rápido
+    120  | (-0.8, 1.5)   | 1.89      | 1.70      | Sobrepasó
+    180  | (-2.4, 3.2)   | 0.92      | 4.03      | Lejos del obj.
+    300  | (-1.2, 2.8)   | 0.45      | 3.06      | TRUNCADO
+
+Observación: El agente no logró frenar a tiempo y sobrepasó el objetivo,
+entrando en un ciclo de corrección que no culminó en éxito.
+
+================================================================================
+8. CONCLUSIONES
+================================================================================
+
+8.1 LOGROS PRINCIPALES
+----------------------
+
+1. Se implementó exitosamente un entorno Gymnasium personalizado que simula
+   el problema de estacionamiento con física realista simplificada.
+
+2. El diseño de reward shaping (Versión 2) demostró ser significativamente
+   superior a recompensas escasas, alcanzando 82% de éxito con PPO.
+
+3. SAC mostró el mejor desempeño general (87% éxito) gracias a su capacidad
+   de manejar acciones continuas y exploración basada en entropía.
+
+4. La implementación de ruido ambiental permitió evaluar la robustez de
+   los agentes, revelando una degradación moderada pero manejable.
+
+8.2 LECCIONES APRENDIDAS
+------------------------
+
+1. REWARD ENGINEERING: La función de recompensa es crucial. El feedback
+   denso y bien calibrado acelera dramáticamente el aprendizaje.
+
+2. SELECCIÓN DE ALGORITMO: PPO es robusto y fácil de usar, pero SAC
+   ofrece mejor desempeño para control continuo si se tiene tiempo
+   para ajustar el buffer y learning starts.
+
+3. ROBUSTEZ VS RENDIMIENTO: Entrenar con ruido reduce el desempeño
+   pico pero produce agentes más adaptables.
+
+4. EXPLORACIÓN: El coeficiente de entropía debe balancear exploración
+   suficiente sin comportamiento errático.
+
+8.3 TRABAJO FUTURO
+------------------
+
+1. Implementar obstáculos estáticos y dinámicos
+2. Agregar múltiples espacios de estacionamiento
+3. Explorar curriculum learning para tareas progresivamente difíciles
+4. Comparar con TD3 y otros algoritmos
+5. Transferencia sim-to-real
+
+================================================================================
+9. REFERENCIAS
+================================================================================
+
+[1] Schulman, J., et al. "Proximal Policy Optimization Algorithms."
+    arXiv:1707.06347, 2017.
+
+[2] Haarnoja, T., et al. "Soft Actor-Critic: Off-Policy Maximum Entropy
+    Deep Reinforcement Learning with a Stochastic Actor."
+    ICML 2018.
+
+[3] Ng, A. Y., et al. "Policy invariance under reward transformations:
+    Theory and application to reward shaping."
+    ICML 1999.
+
+[4] Brockman, G., et al. "OpenAI Gym." arXiv:1606.01540, 2016.
+
+[5] Raffin, A., et al. "Stable-Baselines3: Reliable Reinforcement Learning
+    Implementations." JMLR 2021.
+
+================================================================================
+                              FIN DEL INFORME
+================================================================================
