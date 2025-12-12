@@ -536,15 +536,23 @@ class ParkingEnv(gym.Env):
                  cy + c[0] * sin_t + c[1] * cos_t)
                 for c in corners
             ]
+            # Cast to plain float pairs for pygame (avoids TypeError on some platforms)
+            rotated = [(float(px), float(py)) for px, py in rotated]
 
             # Dibujar auto
             pygame.draw.polygon(self._screen, RED, rotated)
             pygame.draw.polygon(self._screen, BLACK, rotated, 2)
 
             # Dibujar dirección
-            front_x = cx + half_l * 1.5 * cos_t
-            front_y = cy + half_l * 1.5 * sin_t
-            pygame.draw.line(self._screen, YELLOW, (cx, cy), (front_x, front_y), 3)
+            front_x = float(cx + half_l * 1.5 * cos_t)
+            front_y = float(cy + half_l * 1.5 * sin_t)
+            pygame.draw.line(
+                self._screen,
+                YELLOW,
+                (float(cx), float(cy)),
+                (front_x, front_y),
+                3
+            )
 
         # Mostrar información
         if self.state is not None:

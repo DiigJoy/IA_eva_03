@@ -1,0 +1,6 @@
+{
+  "mean_reward": 164.6856896092179,
+  "std_reward": 13.660370616651019,
+  "success_rate": 1.0,
+  "n_eval_episodes": 50
+}
